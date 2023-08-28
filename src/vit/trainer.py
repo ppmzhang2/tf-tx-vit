@@ -1,4 +1,4 @@
-"""Model training."""
+"""Model training module."""
 import logging
 import os
 
@@ -78,6 +78,42 @@ def load_model() -> tuple[tf.keras.Model, tf.train.CheckpointManager]:
     return mdl, manager
 
 
+@tf.function
+def calc_loss(model: tf.keras.Model, x: tf.Tensor, y: tf.Tensor) -> tf.Tensor:
+    """Calculate the loss.
+
+    Args:
+        model (tf.keras.Model): model.
+        x (tf.Tensor): patch tensor.
+        y (tf.Tensor): label tensor.
+
+    Returns:
+        tf.Tensor: loss tensor.
+    """
+    prd = model(x, training=True)
+    loss = risk.risk_cce(y, prd)
+    return loss / cfg.BATCH_SIZE
+
+
+def norm_grad(grads: list[tf.Tensor]) -> list[tf.Tensor]:
+    """Normalize and clip gradients, after checking for NaN.
+
+    Args:
+        grads (list[tf.Tensor]): list of gradients.
+
+    Returns:
+        list[tf.Tensor]: list of normalized and clipped gradients.
+    """
+    # check NaN
+    for grad in grads:
+        if tf.math.reduce_any(tf.math.is_nan(grad)):
+            msg = "NaN gradient detected."
+            raise ValueError(msg)
+    # clip gradient
+    grads, _ = tf.clip_by_global_norm(grads, 5.0)
+    return grads
+
+
 def train_step(
     model: tf.keras.Model,
     x: tf.Tensor,
@@ -86,23 +122,16 @@ def train_step(
     """Train tx model for one step.
 
     Args:
-        model (tf.keras.Model): RPN model.
+        model (tf.keras.Model): model.
         step (int): Current training step index.
         x (tf.Tensor): patch tensor.
         y (tf.Tensor): label tensor.
         clip_norm (float, optional): Gradient clipping norm. Defaults to 5.0.
     """
     with tf.GradientTape() as tape:
-        prd = model(x, training=True)
-        loss = risk.risk_cce(y, prd)
+        loss = calc_loss(model, x, y)
     grads = tape.gradient(loss, model.trainable_variables)
-    # check NaN
-    for grad in grads:
-        if tf.math.reduce_any(tf.math.is_nan(grad)):
-            msg = "NaN gradient detected."
-            raise ValueError(msg)
-    # clip gradient
-    grads, _ = tf.clip_by_global_norm(grads, 5.0)
+    grads = norm_grad(grads)
     optimizer.apply_gradients(
         zip(  # noqa: B905
             grads,
